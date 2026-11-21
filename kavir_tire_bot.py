@@ -294,9 +294,12 @@ class KavirBot:
                     pw = sync_playwright().start()
                     profile = str(app_dir() / "kavir_chrome_profile")
                     context = pw.chromium.launch_persistent_context(
-                        user_data_dir=profile, executable_path=chrome, headless=False,
+                        user_data_dir=profile,
+                        executable_path=chrome,
+                        headless=False,
                         viewport={"width": 1440, "height": 950},
-                        args=["--start-maximized"]
+                        args=["--start-maximized"],
+                        ignore_default_args=["--no-sandbox"]
                     )
                     page = context.pages[0] if context.pages else context.new_page()
                     page.goto(PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
