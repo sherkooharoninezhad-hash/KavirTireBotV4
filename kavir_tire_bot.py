@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 PRODUCTS_URL = "https://kavirtire.ir/products"
 ESALE_URL = "https://kavirtire.ir/esale"
 ESALE_PRODUCTS_URL = "https://kavirtire.ir/esale/products"
-INTERVAL = 4
+INTERVAL = 4  # پایش شبانه‌روزی؛ بدون محدودیت ساعت یا روز
 
 UNAVAILABLE = (
     "اتمام موجودی", "ناموجود", "اتمام‌موجودی", "موجود نیست",
@@ -83,7 +83,7 @@ class KavirBot:
         header = ttk.Frame(self.root, padding=(18, 14))
         header.pack(fill="x")
         ttk.Label(header, text="پایش موجودی کویر تایر", style="Title.TLabel").pack(anchor="e")
-        ttk.Label(header, text="انتخاب محصول، ورود به حساب کاربری و پایش خودکار موجودی",
+        ttk.Label(header, text="انتخاب محصول، ورود به حساب کاربری و پایش شبانه‌روزی (۲۴ ساعته)",
                   font=("Tahoma", 9)).pack(anchor="e", pady=(5, 0))
 
         group = ttk.LabelFrame(self.root, text="مشخصات محصول", padding=12)
@@ -139,7 +139,7 @@ class KavirBot:
         scroll.pack(side="right", fill="y")
         self.log_box.configure(yscrollcommand=scroll.set, state="disabled")
 
-        note = ttk.Label(self.root, text="توجه: ورود به حساب، انتخاب درگاه و پرداخت فقط توسط کاربر انجام می‌شود.",
+        note = ttk.Label(self.root, text="پایش در تمام ساعت‌های شبانه‌روز فعال است؛ ورود به حساب و پرداخت فقط توسط کاربر انجام می‌شود.",
                          foreground="#7c2d12")
         note.pack(anchor="e", padx=18, pady=(0, 8))
 
@@ -185,13 +185,20 @@ class KavirBot:
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     try:
-                        self.root.bell()
+                        if sys.platform == "win32":
+                            import winsound
+                            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                        else:
+                            self.root.bell()
                     except Exception:
-                        pass
+                        try:
+                            self.root.bell()
+                        except Exception:
+                            pass
                     messagebox.showinfo("محصول موجود شد",
                         "دکمه افزودن به سبد خرید کلیک شد.\n"
-                        "لطفاً صفحه سبد / مرحله بعد را بررسی کنید، تعداد حلقه را کنترل کنید "
-                        "و خرید را شخصاً ادامه دهید.")
+                        "لطفاً سریعاً خرید لاستیک خود را انجام دهید.\\n"
+                        "تعداد حلقه و اطلاعات سفارش را بررسی و خرید را شخصاً تکمیل کنید.")
                 elif kind == "error":
                     self.log("خطا: " + str(value))
         except queue.Empty:
@@ -266,19 +273,17 @@ class KavirBot:
         context = None
         page = None
         monitoring = False
+        data_cache = None
+        next_check_at = 0.0
         try:
             while True:
+                timeout = 0.2
+                if monitoring:
+                    timeout = max(0.02, min(0.2, next_check_at - time.monotonic()))
                 try:
-                    cmd, data = self.commands.get(timeout=0.2)
+                    cmd, data = self.commands.get(timeout=timeout)
                 except queue.Empty:
-                    if monitoring and page:
-                        cycle_start = time.monotonic()
-                        if self._monitor_once(page, data_cache):
-                            monitoring = False
-                            self.post("monitor", False)
-                        elapsed = time.monotonic() - cycle_start
-                        time.sleep(max(0, INTERVAL - elapsed))
-                    continue
+                    cmd, data = None, None
 
                 if cmd == "open":
                     if context:
@@ -299,11 +304,10 @@ class KavirBot:
                         headless=False,
                         viewport={"width": 1440, "height": 950},
                         args=["--start-maximized"],
-                        ignore_default_args=["--no-sandbox"]
                     )
                     page = context.pages[0] if context.pages else context.new_page()
-                    page.goto(PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
-                    self.post("status", "مرورگر باز شد. در صورت نیاز وارد حساب سایت شوید؛ سپس صفحه فروش را باز کنید.")
+                    page.goto(ESALE_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
+                    self.post("status", "مرورگر باز شد. وارد حساب شوید و صفحه محصولات فروش را باز نگه دارید.")
                     self.post("log", "Chrome با پروفایل اختصاصی برنامه باز شد.")
                     self.post("ready", True)
 
@@ -313,33 +317,30 @@ class KavirBot:
                         continue
                     page.goto(PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_timeout(1800)
-                    items = self._scrape_products(page)
-                    self.post("products", items)
-                    self.post("status", "فهرست محصولات دریافت شد. برای ورود به حساب، صفحه فروش را باز کنید.")
+                    self.post("products", self._scrape_products(page))
+                    self.post("status", "فهرست محصولات دریافت شد. برای پایش وارد حساب شوید و صفحه فروش را باز کنید.")
 
                 elif cmd == "sale":
                     if not page:
                         self.post("error", "ابتدا مرورگر را باز کنید.")
                         continue
-                    page.goto(ESALE_URL, wait_until="domcontentloaded", timeout=60000)
-                    self.post("status", "لطفاً ابتدا محصول خود را انتخاب یا وارد کنید و به حساب کاربری خود در سایت کویر تایر وارد شوید سپس وارد صفحه خرید بشوید و دکمه پایش برنامه را بزنید...")
-                    self.post("log", "صفحه فروش کویر تایر باز شد. ورود به حساب با کاربر است.")
+                    page.goto(ESALE_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
+                    self.post("status", "وارد حساب کاربری شوید و پس از نمایش محصولات، پایش را شروع کنید.")
+                    self.post("log", "صفحه محصولات فروش باز شد؛ ورود به حساب با کاربر است.")
 
                 elif cmd == "start":
                     if not page:
                         self.post("error", "مرورگر باز نیست.")
                         continue
                     size, model, qty = data
-                    current = norm(page.url)
-                    if "esale" not in current:
-                        page.goto(ESALE_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
-                    elif current.rstrip("/") == ESALE_URL.rstrip("/"):
+                    if "esale/products" not in norm(page.url):
                         page.goto(ESALE_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
                     data_cache = (size, model, qty)
                     monitoring = True
+                    next_check_at = 0.0
                     self.post("monitor", True)
-                    self.post("log", f"پایش {size} / {model} شروع شد؛ فاصله بررسی ۴ ثانیه است.")
-                    self.post("status", "در حال بررسی موجودی؛ برای توقف از دکمه توقف استفاده کنید.")
+                    self.post("log", f"پایش شبانه‌روزی {size} / {model} شروع شد؛ بررسی هر ۴ ثانیه.")
+                    self.post("status", "پایش ۲۴ ساعته فعال است؛ بدون محدودیت ساعت شروع یا پایان.")
 
                 elif cmd == "stop":
                     monitoring = False
@@ -347,8 +348,15 @@ class KavirBot:
                     self.post("status", "پایش متوقف شد.")
                     self.post("log", "پایش به درخواست کاربر متوقف شد.")
 
+                if monitoring and page and data_cache and time.monotonic() >= next_check_at:
+                    if self._monitor_once(page, data_cache):
+                        monitoring = False
+                        self.post("monitor", False)
+                    next_check_at = time.monotonic() + INTERVAL
+
         except Exception as exc:
             self.post("error", repr(exc))
+            self.post("status", "اجرای ربات متوقف شد؛ خطا را در گزارش بررسی کنید.")
         finally:
             try:
                 if context:
@@ -386,8 +394,8 @@ class KavirBot:
 
     def _monitor_once(self, page, selection):
         size, model, qty = selection
+        target_text = f"{size} {model}"
         try:
-            # هر چرخه ابتدا دکمه بروزرسانی موجودی را می‌زند.
             refresh = page.get_by_text(re.compile("بروزرسانی موجودی|به.?روزرسانی موجودی"))
             clicked = False
             for i in range(min(refresh.count(), 8)):
@@ -400,91 +408,117 @@ class KavirBot:
                 except Exception:
                     continue
             if not clicked:
-                self.post("status", "دکمه «بروزرسانی موجودی» پیدا نشد؛ صفحه فروش / فهرست محصولات را بررسی کنید.")
-                time.sleep(INTERVAL)
-                return
+                self.post("status", "دکمه «بروزرسانی موجودی» پیدا نشد؛ صفحه فروش را بررسی کنید.")
+                return False
 
-            page.wait_for_timeout(900)
-            target_text = f"{size} {model}"
-            # متن محصول را پیدا کرده و نزدیک‌ترین کارت دارای کنترل خرید را بررسی می‌کند.
-            target = page.get_by_text(re.compile(re.escape(size), re.I)).filter(has_text=re.compile(re.escape(model), re.I)).first
+            page.wait_for_timeout(700)
+            target = page.get_by_text(re.compile(re.escape(size), re.I)).filter(
+                has_text=re.compile(re.escape(model), re.I)
+            ).first
             if target.count() == 0:
                 target = page.get_by_text(re.compile(re.escape(model), re.I)).first
             if target.count() == 0:
-                self.post("status", f"محصول {target_text} در صفحه پیدا نشد؛ مشخصات یا صفحه را بررسی کنید.")
-                time.sleep(INTERVAL)
-                return
+                self.post("status", f"محصول {target_text} در صفحه پیدا نشد؛ مشخصات را بررسی کنید.")
+                return False
 
             card = target.locator("xpath=ancestor::*[.//button or .//a][1]")
             if card.count() == 0:
                 self.post("status", "کارت محصول پیدا نشد؛ ساختار صفحه ممکن است تغییر کرده باشد.")
-                time.sleep(INTERVAL)
-                return
+                return False
 
             card_text = norm(card.inner_text(timeout=2500))
-            if any(norm(w) in card_text for w in UNAVAILABLE):
-                self.post("status", f"{target_text}: هنوز ناموجود است.")
-                time.sleep(INTERVAL)
-                return
+            unavailable_words = tuple(norm(w) for w in UNAVAILABLE)
+            if any(word in card_text for word in unavailable_words):
+                self.post("status", f"{target_text}: ناموجود / اتمام موجودی؛ پایش ادامه دارد.")
+                return False
 
             controls = card.locator("button, a, input[type=button], input[type=submit]")
+            add_phrases = (
+                "افزودن به سبد خرید", "افزودن به سبد", "اضافه به سبد خرید",
+                "اضافه به سبد", "اضافه کردن به سبد", "افزودن به سبدخرید",
+            )
+            generic_phrases = ("خرید", "ثبت سفارش", "ادامه خرید")
+            chosen = None
+
             for i in range(min(controls.count(), 30)):
                 el = controls.nth(i)
                 try:
                     if not el.is_visible() or not el.is_enabled():
                         continue
-                    label = norm(el.inner_text(timeout=700) or el.get_attribute("value") or el.get_attribute("aria-label") or "")
-                    if any(norm(w) in label for w in UNAVAILABLE):
+                    if (el.get_attribute("aria-disabled") or "").lower() == "true":
                         continue
-                    # کلیک فقط با نشانه صریح افزودن/سبد؛ از کلیک حدسی جلوگیری می‌شود.
-                    explicit_buy = any(norm(w) in label for w in AVAILABLE_WORDS)
-                    generic_buy = any(norm(w) in label for w in ("خرید", "سفارش", "انتخاب"))
-                    color_available = False
+                    label = norm(
+                        el.inner_text(timeout=700)
+                        or el.get_attribute("value")
+                        or el.get_attribute("aria-label")
+                        or el.get_attribute("title")
+                        or ""
+                    )
+                    if not label or any(word in label for word in unavailable_words):
+                        continue
+
+                    style_info = el.evaluate("""e => {
+                        const s = getComputedStyle(e), r = e.getBoundingClientRect();
+                        return {bg:s.backgroundColor, opacity:s.opacity,
+                                pointer:s.pointerEvents, disabled:!!e.disabled,
+                                visible:r.width>0 && r.height>0};
+                    }""")
+                    if (style_info.get("disabled") or style_info.get("opacity") == "0"
+                            or style_info.get("pointer") == "none" or not style_info.get("visible")):
+                        continue
+
+                    explicit_add = any(phrase in label for phrase in add_phrases)
+                    generic_buy = any(phrase in label for phrase in generic_phrases)
+                    active_color = False
                     if generic_buy:
-                        try:
-                            colors = el.evaluate("""e => {
-                                const s = getComputedStyle(e);
-                                return {bg:s.backgroundColor, color:s.color};
-                            }""")
-                            def rgb(v):
-                                nums = re.findall(r"\\d+(?:\\.\\d+)?", v or "")
-                                return tuple(float(x) for x in nums[:3]) if len(nums) >= 3 else (0,0,0)
-                            bg = rgb(colors.get("bg", ""))
-                            fg = rgb(colors.get("color", ""))
-                            bg_green = bg[1] > 95 and bg[1] > bg[0] * 1.18 and bg[1] >= bg[2] * 0.85
-                            fg_green = fg[1] > 85 and fg[1] > fg[0] * 1.18 and fg[1] >= fg[2] * 0.85
-                            color_available = bg_green or (min(bg) > 220 and fg_green)
-                        except Exception:
-                            color_available = False
-                    if explicit_buy or (generic_buy and color_available):
-                        el.click(timeout=5000)
-                        page.wait_for_timeout(1800)
-                        qty_inputs = page.locator("input[type='number'], input[inputmode='numeric']")
-                        qty_set = False
-                        for qidx in range(min(qty_inputs.count(), 10)):
-                            qbox = qty_inputs.nth(qidx)
-                            try:
-                                if qbox.is_visible() and qbox.is_enabled():
-                                    qbox.fill(str(qty), timeout=1500)
-                                    qbox.dispatch_event("change")
-                                    qty_set = True
-                                    break
-                            except Exception:
-                                continue
-                        self.post("log", f"دکمه خرید برای {target_text} کلیک شد.")
-                        self.post("log", f"تعداد {qty} حلقه ثبت شد." if qty_set else "ورودی تعداد شناسایی نشد؛ تعداد را دستی کنترل کنید.")
-                        self.post("status", "محصول به مرحله بعد / سبد خرید منتقل شد. تعداد حلقه و اطلاعات را بررسی کنید.")
-                        self.post("found", True)
-                        return True
+                        nums = re.findall(r"\d+(?:\.\d+)?", style_info.get("bg", ""))
+                        if len(nums) >= 3:
+                            r, g, b = [float(x) for x in nums[:3]]
+                            spread = max(r, g, b) - min(r, g, b)
+                            not_red = not (r > 135 and r > g * 1.18 and r > b * 1.12)
+                            active_color = spread >= 35 and not_red and max(r, g, b) > 80
+
+                    # متن صریح افزودن به سبد معیار اصلی است؛ رنگ‌های متفاوت مانع تشخیص نیستند.
+                    if explicit_add or (generic_buy and active_color):
+                        chosen = el
+                        break
                 except Exception:
                     continue
 
-            self.post("status", f"{target_text}: دکمه خرید فعال و قابل تشخیص نیست؛ پایش ادامه دارد.")
+            if chosen is None:
+                self.post("status", f"{target_text}: دکمه فعال افزودن به سبد شناسایی نشد؛ پایش ادامه دارد.")
+                return False
+
+            chosen.click(timeout=5000)  # فقط یک بار کلیک می‌شود.
+            self.post("log", f"دکمه افزودن به سبد برای {target_text} کلیک شد.")
+            page.wait_for_timeout(900)
+
+            qty_inputs = page.locator("input[type='number'], input[inputmode='numeric']")
+            qty_set = False
+            for qidx in range(min(qty_inputs.count(), 10)):
+                qbox = qty_inputs.nth(qidx)
+                try:
+                    if qbox.is_visible() and qbox.is_enabled():
+                        qbox.fill(str(qty), timeout=1200)
+                        qbox.dispatch_event("change")
+                        qty_set = True
+                        break
+                except Exception:
+                    continue
+
+            self.post("log", f"تعداد {qty} حلقه وارد شد." if qty_set else
+                      "فیلد تعداد پیدا نشد؛ تعداد را در صفحه بعد بررسی کنید.")
+            self.post("status", "محصول به مرحله بعد منتقل شد؛ لطفاً سریعاً خرید را شخصاً تکمیل کنید.")
+            self.post("found", True)
+            return True
+
         except PlaywrightTimeoutError:
-            self.post("status", "پاسخ سایت طول کشید؛ نوبت بعدی دوباره تلاش می‌کند.")
+            self.post("status", "پاسخ سایت طول کشید؛ پایش در نوبت بعدی ادامه می‌یابد.")
+            return False
         except Exception as exc:
             self.post("error", f"خطا در پایش: {exc}")
-        return False
+            return False
+
 
 
 def main():
